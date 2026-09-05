@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>JANコードスキャン（診断版）</title>
-<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<title>JANコード数字読み取り（OCR版）</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -12,21 +12,44 @@
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     background: #0f172a; color: #fff; min-height: 100vh;
   }
-  h1 { font-size: 1.1rem; text-align: center; margin: 0 0 12px; }
-  #reader { width: 100%; max-width: 480px; margin: 0 auto; border-radius: 10px; overflow: hidden; background: #000; }
-  #status { text-align: center; margin: 14px 0 4px; font-size: 0.95rem; color: #cbd5e1; white-space: pre-line; }
-  #debug { text-align: center; font-size: 0.85rem; color: #fbbf24; margin-bottom: 10px; }
+  h1 { font-size: 1.05rem; text-align: center; margin: 0 0 12px; }
+  .cam-wrap {
+    position: relative; width: 100%; max-width: 480px; margin: 0 auto;
+    border-radius: 10px; overflow: hidden; background: #000;
+  }
+  video { width: 100%; display: block; }
+  .guide {
+    position: absolute; left: 5%; right: 5%; top: 40%; height: 20%;
+    border: 2px solid #22d3ee; border-radius: 6px; pointer-events: none;
+  }
+  .guide::after {
+    content: "この帯に数字を合わせてください";
+    position: absolute; top: -26px; left: 0; right: 0; text-align: center;
+    font-size: 0.75rem; color: #22d3ee;
+  }
+  #status { text-align: center; margin: 14px 0 10px; font-size: 0.95rem; color: #cbd5e1; white-space: pre-line; }
+  .btn {
+    display: block; width: 100%; max-width: 480px; margin: 8px auto; background: #2563eb; color: #fff;
+    border: none; padding: 14px; border-radius: 10px; font-weight: bold; font-size: 1rem; cursor: pointer;
+  }
+  .btn:disabled { background: #475569; }
+  .candidates { max-width: 480px; margin: 14px auto 0; }
+  .cand-btn {
+    display: block; width: 100%; background: #16a34a; color: #fff; border: none;
+    padding: 14px; border-radius: 10px; font-weight: bold; font-size: 1.2rem; letter-spacing: 1px;
+    margin-bottom: 8px; cursor: pointer;
+  }
   .result-box {
-    display: none; max-width: 480px; margin: 0 auto; background: #16a34a; color: #fff;
+    display: none; max-width: 480px; margin: 14px auto 0; background: #16a34a; color: #fff;
     border-radius: 10px; padding: 16px; text-align: center;
   }
   .result-box.show { display: block; }
   .result-box .code { font-size: 1.6rem; font-weight: bold; margin: 6px 0 14px; letter-spacing: 1px; }
-  .btn {
+  .action-btn {
     display: inline-block; background: #fff; color: #0f172a; border: none; padding: 12px 20px;
     border-radius: 8px; font-weight: bold; font-size: 0.95rem; cursor: pointer; margin: 4px;
   }
-  .manual-box { max-width: 480px; margin: 20px auto 0; text-align: center; }
+  .manual-box { max-width: 480px; margin: 16px auto 0; text-align: center; }
   .manual-box input {
     width: 70%; padding: 10px; border-radius: 8px; border: none; font-size: 1rem; text-align: center;
   }
@@ -34,76 +57,149 @@
     padding: 10px 16px; border-radius: 8px; border: none; background: #2563eb; color: #fff;
     font-weight: bold; margin-left: 6px;
   }
+  canvas { display: none; }
 </style>
 </head>
 <body>
 
-  <h1>📷 JANコードスキャン（診断版）</h1>
-  <div id="reader"></div>
+  <h1>🔢 JANコード数字読み取り（OCR版）</h1>
+
+  <div class="cam-wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="guide"></div>
+  </div>
+
+  <button class="btn" id="captureBtn" onclick="captureAndRead()">📸 この状態で数字を読み取る</button>
   <div id="status">カメラを起動しています…</div>
-  <div id="debug">スキャン試行回数: 0</div>
+
+  <div class="candidates" id="candidates"></div>
 
   <div class="result-box" id="resultBox">
-    <div>読み取りました</div>
+    <div>この番号でよろしいですか</div>
     <div class="code" id="resultCode"></div>
-    <button class="btn" onclick="sendBack()">元の画面に戻す</button>
-    <button class="btn" onclick="copyCode()">コピーする</button>
-    <button class="btn" onclick="scanAgain()">もう一度読む</button>
+    <button class="action-btn" onclick="sendBack()">元の画面に戻す</button>
+    <button class="action-btn" onclick="copyCode()">コピーする</button>
+    <button class="action-btn" onclick="resetAll()">やり直す</button>
   </div>
 
   <div class="manual-box">
-    <input type="text" id="manualInput" placeholder="うまく読めない場合はここに手入力">
+    <input type="text" id="manualInput" placeholder="読み取れない場合はここに手入力">
     <button onclick="useManual()">確定</button>
   </div>
 
-<script>
-  let scanner = null;
-  let lastCode = '';
-  let tryCount = 0;
+  <canvas id="canvas"></canvas>
 
-  function startScan() {
+<script>
+  let stream = null;
+  let worker = null;
+  let lastCode = '';
+
+  async function initCamera() {
     try {
-      scanner = new Html5Qrcode('reader');
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+      });
+      document.getElementById('video').srcObject = stream;
+      document.getElementById('status').innerText = '準備完了。数字を帯に合わせて撮影してください。';
     } catch (e) {
-      document.getElementById('status').innerText = 'スキャナ初期化エラー: ' + e;
+      document.getElementById('status').innerText = 'カメラを起動できませんでした。\n' + e;
+    }
+  }
+
+  async function initOcr() {
+    document.getElementById('status').innerText = '文字認識エンジンを準備しています…（初回は少し時間がかかります）';
+    worker = await Tesseract.createWorker('eng');
+    await worker.setParameters({
+      tessedit_char_whitelist: '0123456789',
+      tessedit_pageseg_mode: '7' // 1行のテキストとして扱う
+    });
+    document.getElementById('status').innerText = '準備完了。数字を帯に合わせて撮影してください。';
+  }
+
+  async function captureAndRead() {
+    const btn = document.getElementById('captureBtn');
+    btn.disabled = true;
+    document.getElementById('status').innerText = '読み取っています…';
+    document.getElementById('candidates').innerHTML = '';
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const vw = video.videoWidth, vh = video.videoHeight;
+
+    // 画面上のガイド帯（縦40%〜60%、横5%〜95%）と同じ比率で切り出す
+    const cropX = Math.floor(vw * 0.05);
+    const cropY = Math.floor(vh * 0.40);
+    const cropW = Math.floor(vw * 0.90);
+    const cropH = Math.floor(vh * 0.20);
+
+    canvas.width = cropW;
+    canvas.height = cropH;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+    try {
+      const { data: { text } } = await worker.recognize(canvas);
+      handleOcrText(text);
+    } catch (e) {
+      document.getElementById('status').innerText = '読み取りに失敗しました。\n' + e;
+    }
+    btn.disabled = false;
+  }
+
+  function handleOcrText(rawText) {
+    const tokens = rawText.split(/\s+/).filter(function(t) { return t.length > 0; });
+    const candidates = [];
+    tokens.forEach(function(t) {
+      const digits = t.replace(/[^0-9]/g, '');
+      if (digits.length === 13 || digits.length === 12 || digits.length === 8) {
+        if (candidates.indexOf(digits) === -1) candidates.push(digits);
+      }
+    });
+
+    // 連結された全体からも13桁の並びを探す（行分割がうまくいかない場合の保険）
+    const allDigits = rawText.replace(/[^0-9]/g, '');
+    if (allDigits.length >= 13) {
+      for (let i = 0; i + 13 <= allDigits.length; i++) {
+        const cand = allDigits.substring(i, i + 13);
+        if (candidates.indexOf(cand) === -1) candidates.push(cand);
+      }
+    }
+
+    if (candidates.length === 0) {
+      document.getElementById('status').innerText =
+        '数字を認識できませんでした。\n認識結果: "' + rawText.trim() + '"\nもう少し近づけて、明るい場所で再度お試しください。';
       return;
     }
 
-    scanner.start(
-      { facingMode: 'environment' },
-      { fps: 10, qrbox: 250 },
-      function(decodedText) { onScanned(decodedText); },
-      function(errMsg) {
-        tryCount++;
-        document.getElementById('debug').innerText = 'スキャン試行回数: ' + tryCount;
-      }
-    ).then(function() {
-      document.getElementById('status').innerText = '読み取り中…（枠内にバーコードを写してください）';
-    }).catch(function(err) {
-      document.getElementById('status').innerText = 'カメラ起動エラー: ' + err;
+    document.getElementById('status').innerText = '候補が見つかりました。正しいものを選んでください。';
+    const el = document.getElementById('candidates');
+    el.innerHTML = '';
+    candidates.forEach(function(c) {
+      const b = document.createElement('button');
+      b.className = 'cand-btn';
+      b.innerText = c;
+      b.onclick = function() { showResult(c); };
+      el.appendChild(b);
     });
   }
 
-  function onScanned(code) {
+  function showResult(code) {
     lastCode = code;
-    if (scanner) { scanner.stop().catch(function(){}); }
     document.getElementById('resultCode').innerText = code;
     document.getElementById('resultBox').classList.add('show');
+    document.getElementById('candidates').innerHTML = '';
     document.getElementById('status').innerText = '';
   }
 
-  function scanAgain() {
+  function resetAll() {
     document.getElementById('resultBox').classList.remove('show');
-    tryCount = 0;
-    document.getElementById('debug').innerText = 'スキャン試行回数: 0';
-    document.getElementById('status').innerText = 'カメラを起動しています…';
-    startScan();
+    document.getElementById('status').innerText = '準備完了。数字を帯に合わせて撮影してください。';
   }
 
   function useManual() {
     const v = document.getElementById('manualInput').value.trim();
     if (!v) { alert('JANコードを入力してください。'); return; }
-    onScanned(v);
+    showResult(v);
   }
 
   function copyCode() {
@@ -124,7 +220,10 @@
     }
   }
 
-  window.addEventListener('load', startScan);
+  window.addEventListener('load', function() {
+    initCamera();
+    initOcr();
+  });
 </script>
 </body>
 </html>
