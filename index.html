@@ -14,7 +14,7 @@
   }
   h1 { font-size: 1.1rem; text-align: center; margin: 0 0 12px; }
   #reader { width: 100%; max-width: 480px; margin: 0 auto; border-radius: 10px; overflow: hidden; background: #000; min-height: 260px; }
-  #status { text-align: center; margin: 14px 0; font-size: 0.95rem; color: #cbd5e1; min-height: 1.4em; }
+  #status { text-align: center; margin: 14px 0; font-size: 0.95rem; color: #cbd5e1; min-height: 1.4em; white-space: pre-line; }
   .result-box {
     display: none; max-width: 480px; margin: 0 auto; background: #16a34a; color: #fff;
     border-radius: 10px; padding: 16px; text-align: center;
@@ -33,7 +33,8 @@
     padding: 10px 16px; border-radius: 8px; border: none; background: #2563eb; color: #fff;
     font-weight: bold; margin-left: 6px;
   }
-  .hint { text-align: center; font-size: 0.78rem; color: #94a3b8; margin-top: 16px; line-height: 1.6; }
+  .hint { text-align: center; font-size: 0.8rem; color: #94a3b8; margin-top: 16px; line-height: 1.8; }
+  .hint b { color: #fbbf24; }
 </style>
 </head>
 <body>
@@ -56,7 +57,8 @@
   </div>
 
   <div class="hint">
-    バーコードを枠内に写すと自動で読み取ります。<br>
+    <b>コツ：</b>バーコードを横向きのまま、枠いっぱいになるくらい近づけてください。<br>
+    暗い場所では読み取りにくいので、明るい場所で試してください。<br>
     読み取り後は「元の画面に戻す」を押すと、開いていたアプリの画面に自動で戻ります。
   </div>
 
@@ -72,12 +74,29 @@
         Html5QrcodeSupportedFormats.UPC_A,
         Html5QrcodeSupportedFormats.UPC_E,
         Html5QrcodeSupportedFormats.CODE_128
-      ]
+      ],
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      verbose: false
     });
+
+    const config = {
+      fps: 15,
+      qrbox: function(viewfinderWidth, viewfinderHeight) {
+        const w = Math.floor(viewfinderWidth * 0.9);
+        const h = Math.floor(Math.min(viewfinderHeight * 0.5, w * 0.4));
+        return { width: w, height: h };
+      },
+      aspectRatio: 1.7777778,
+      videoConstraints: {
+        facingMode: 'environment',
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      }
+    };
 
     scanner.start(
       { facingMode: 'environment' },
-      { fps: 10, qrbox: { width: 260, height: 150 } },
+      config,
       function(decodedText) { onScanned(decodedText); },
       function() { /* 読み取り中の失敗は無視 */ }
     ).then(function() {
