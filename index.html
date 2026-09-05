@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>JANコードスキャン</title>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f172a; color: #fff; min-height: 100vh;
+  }
+  h1 { font-size: 1.1rem; text-align: center; margin: 0 0 12px; }
+  #reader { width: 100%; max-width: 480px; margin: 0 auto; border-radius: 10px; overflow: hidden; background: #000; min-height: 260px; }
+  #status { text-align: center; margin: 14px 0; font-size: 0.95rem; color: #cbd5e1; min-height: 1.4em; }
+  .result-box {
+    display: none; max-width: 480px; margin: 0 auto; background: #16a34a; color: #fff;
+    border-radius: 10px; padding: 16px; text-align: center;
+  }
+  .result-box.show { display: block; }
+  .result-box .code { font-size: 1.6rem; font-weight: bold; margin: 6px 0 14px; letter-spacing: 1px; }
+  .btn {
+    display: inline-block; background: #fff; color: #0f172a; border: none; padding: 12px 20px;
+    border-radius: 8px; font-weight: bold; font-size: 0.95rem; cursor: pointer; margin: 4px;
+  }
+  .manual-box { max-width: 480px; margin: 20px auto 0; text-align: center; }
+  .manual-box input {
+    width: 70%; padding: 10px; border-radius: 8px; border: none; font-size: 1rem; text-align: center;
+  }
+  .manual-box button {
+    padding: 10px 16px; border-radius: 8px; border: none; background: #2563eb; color: #fff;
+    font-weight: bold; margin-left: 6px;
+  }
+  .hint { text-align: center; font-size: 0.78rem; color: #94a3b8; margin-top: 16px; line-height: 1.6; }
+</style>
+</head>
+<body>
+
+  <h1>📷 JANコードスキャン</h1>
+  <div id="reader"></div>
+  <div id="status">カメラを起動しています…</div>
+
+  <div class="result-box" id="resultBox">
+    <div>読み取りました</div>
+    <div class="code" id="resultCode"></div>
+    <button class="btn" onclick="sendBack()">元の画面に戻す</button>
+    <button class="btn" onclick="copyCode()">コピーする</button>
+    <button class="btn" onclick="scanAgain()">もう一度読む</button>
+  </div>
+
+  <div class="manual-box">
+    <input type="text" id="manualInput" placeholder="うまく読めない場合はここに手入力">
+    <button onclick="useManual()">確定</button>
+  </div>
+
+  <div class="hint">
+    バーコードを枠内に写すと自動で読み取ります。<br>
+    読み取り後は「元の画面に戻す」を押すと、開いていたアプリの画面に自動で戻ります。
+  </div>
+
+<script>
+  let scanner = null;
+  let lastCode = '';
+
+  function startScan() {
+    scanner = new Html5Qrcode('reader', {
+      formatsToSupport: [
+        Html5QrcodeSupportedFormats.EAN_13,
+        Html5QrcodeSupportedFormats.EAN_8,
+        Html5QrcodeSupportedFormats.UPC_A,
+        Html5QrcodeSupportedFormats.UPC_E,
+        Html5QrcodeSupportedFormats.CODE_128
+      ]
+    });
+
+    scanner.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 260, height: 150 } },
+      function(decodedText) { onScanned(decodedText); },
+      function() { /* 読み取り中の失敗は無視 */ }
+    ).then(function() {
+      document.getElementById('status').innerText = '読み取り中…';
+    }).catch(function(err) {
+      document.getElementById('status').innerText =
+        'カメラを起動できませんでした。下の欄にJANコードを手入力してください。\n(' + err + ')';
+    });
+  }
+
+  function onScanned(code) {
+    lastCode = code;
+    if (scanner) {
+      scanner.stop().catch(function(){});
+    }
+    document.getElementById('resultCode').innerText = code;
+    document.getElementById('resultBox').classList.add('show');
+    document.getElementById('status').innerText = '';
+  }
+
+  function scanAgain() {
+    document.getElementById('resultBox').classList.remove('show');
+    document.getElementById('status').innerText = 'カメラを起動しています…';
+    startScan();
+  }
+
+  function useManual() {
+    const v = document.getElementById('manualInput').value.trim();
+    if (!v) { alert('JANコードを入力してください。'); return; }
+    onScanned(v);
+  }
+
+  function copyCode() {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(lastCode).then(function() {
+        alert('コピーしました: ' + lastCode);
+      });
+    } else {
+      alert('コード: ' + lastCode);
+    }
+  }
+
+  function sendBack() {
+    if (window.opener) {
+      window.opener.postMessage({ type: 'jan-scanned', code: lastCode }, '*');
+      document.getElementById('status').innerText = '元の画面に戻しました。このタブは閉じて構いません。';
+      setTimeout(function() { window.close(); }, 600);
+    } else {
+      alert('元のアプリの画面が見つかりません。コピーして手動で貼り付けてください。');
+    }
+  }
+
+  window.addEventListener('load', startScan);
+</script>
+</body>
+</html>
