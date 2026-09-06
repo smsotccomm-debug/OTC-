@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>JANコードスキャン（ネイティブ高速版）</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f172a; color: #fff; min-height: 100vh;
+  }
+  h1 { font-size: 1.05rem; text-align: center; margin: 0 0 12px; }
+  .cam-wrap {
+    position: relative; width: 100%; max-width: 480px; margin: 0 auto;
+    border-radius: 10px; overflow: hidden; background: #000;
+  }
+  video { width: 100%; display: block; }
+  #status { text-align: center; margin: 14px 0 4px; font-size: 0.95rem; color: #cbd5e1; white-space: pre-line; }
+  #engine { text-align: center; font-size: 0.78rem; color: #64748b; margin-bottom: 10px; }
+
+  .found-box {
+    display: none; max-width: 480px; margin: 14px auto 0; background: #16a34a; color: #fff;
+    border-radius: 10px; padding: 16px;
+  }
+  .found-box.show { display: block; }
+  .found-box .name { font-size: 1.2rem; font-weight: bold; margin-bottom: 4px; }
+  .found-box .jan { font-size: 0.8rem; opacity: 0.85; margin-bottom: 12px; }
+  .found-box .price { font-size: 0.85rem; opacity: 0.9; margin-bottom: 12px; }
+  .found-box label { display: block; font-size: 0.85rem; margin-bottom: 4px; font-weight: bold; }
+  .found-box input {
+    width: 100%; padding: 12px; border-radius: 8px; border: none; font-size: 1.3rem;
+    text-align: center; margin-bottom: 12px;
+  }
+
+  .notfound-box {
+    display: none; max-width: 480px; margin: 14px auto 0; background: #b45309; color: #fff;
+    border-radius: 10px; padding: 16px; text-align: center;
+  }
+  .notfound-box.show { display: block; }
+  .notfound-box .jan { font-size: 1.3rem; font-weight: bold; margin: 6px 0 12px; }
+
+  .btn {
+    display: block; width: 100%; background: #fff; color: #0f172a; border: none; padding: 14px;
+    border-radius: 8px; font-weight: bold; font-size: 1rem; cursor: pointer; margin-top: 6px;
+  }
+  .btn.secondary { background: transparent; color: #cbd5e1; border: 1px solid #475569; }
+
+  .manual-box { max-width: 480px; margin: 20px auto 0; text-align: center; }
+  .manual-box input {
+    width: 70%; padding: 10px; border-radius: 8px; border: none; font-size: 1rem; text-align: center;
+  }
+  .manual-box button {
+    padding: 10px 16px; border-radius: 8px; border: none; background: #2563eb; color: #fff;
+    font-weight: bold; margin-left: 6px;
+  }
+
+  .not-supported {
+    display: none; max-width: 480px; margin: 20px auto; background: #7c2d12; color: #fff;
+    border-radius: 10px; padding: 16px; text-align: center; line-height: 1.7; font-size: 0.9rem;
+  }
+  .not-supported.show { display: block; }
+</style>
+</head>
+<body>
+
+  <h1>⚡ JANコードスキャン</h1>
+  <div id="engine"></div>
+
+  <div class="cam-wrap" id="camWrap">
+    <video id="video" autoplay playsinline muted></video>
+  </div>
+  <div id="status">カメラを起動しています…</div>
+
+  <div class="not-supported" id="notSupported">
+    この端末・ブラウザは、ブラウザ標準の高速バーコード認識に対応していません。<br>
+    <b>Androidの最新版Chromeでの利用を推奨します。</b><br>
+    下の欄からJANコードを手入力してください。
+  </div>
+
+  <!-- 商品が見つかった場合 -->
+  <div class="found-box" id="foundBox">
+    <div class="name" id="foundName"></div>
+    <div class="jan" id="foundJan"></div>
+    <div class="price" id="foundPrice"></div>
+    <label>数量</label>
+    <input type="number" id="qtyInput" value="1" min="1" inputmode="numeric">
+    <button class="btn" onclick="confirmAndSend()">✅ この内容で確定して戻す</button>
+    <button class="btn secondary" onclick="scanAgain()">もう一度読む</button>
+  </div>
+
+  <!-- 商品マスタに無い場合 -->
+  <div class="notfound-box" id="notFoundBox">
+    この商品はマスタに登録されていません
+    <div class="jan" id="notFoundJan"></div>
+    <button class="btn" onclick="sendUnknown()">このJANコードだけ戻す</button>
+    <button class="btn secondary" onclick="scanAgain()">もう一度読む</button>
+  </div>
+
+  <div class="manual-box">
+    <input type="text" id="manualInput" placeholder="うまく読めない場合はここに手入力">
+    <button onclick="useManual()">確定</button>
+  </div>
+
+<script>
+  // ------------------------------------------------------------
+  // GASアプリから渡された商品マスタを受け取る（?items=base64(JSON)）
+  // ------------------------------------------------------------
+  let PRODUCTS = [];
+  try {
+    const params = new URLSearchParams(location.search);
+    const raw = params.get('items');
+    if (raw) {
+      const json = decodeURIComponent(escape(atob(decodeURIComponent(raw))));
+      PRODUCTS = JSON.parse(json);
+    }
+  } catch (e) {
+    console.error('商品マスタの読み込みに失敗:', e);
+  }
+
+  let stream = null;
+  let detector = null;
+  let scanning = false;
+  let currentCode = '';
+  let currentProduct = null;
+
+  async function start() {
+    if (!('BarcodeDetector' in window)) {
+      document.getElementById('camWrap').style.display = 'none';
+      document.getElementById('status').innerText = '';
+      document.getElementById('notSupported').classList.add('show');
+      document.getElementById('engine').innerText = '判定: ブラウザ標準のネイティブ認識には非対応';
+      return;
+    }
+    try {
+      const formats = await BarcodeDetector.getSupportedFormats();
+      document.getElementById('engine').innerText = '判定: ネイティブ認識に対応 (' + formats.join(', ') + ')';
+      detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'] });
+    } catch (e) {
+      document.getElementById('notSupported').classList.add('show');
+      document.getElementById('engine').innerText = '初期化エラー: ' + e;
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1920 }, height: { ideal: 1080 },
+          advanced: [{ focusMode: 'continuous' }]
+        }
+      });
+      document.getElementById('video').srcObject = stream;
+      document.getElementById('status').innerText = '読み取り中…（バーコードを画面に写してください）';
+      scanning = true;
+      requestAnimationFrame(tick);
+    } catch (e) {
+      document.getElementById('status').innerText = 'カメラを起動できませんでした。\n' + e;
+    }
+  }
+
+  function tick() {
+    if (!scanning) return;
+    const video = document.getElementById('video');
+    if (video.readyState >= 2) {
+      detector.detect(video)
+        .then(function(codes) {
+          if (codes && codes.length > 0) { onScanned(codes[0].rawValue); }
+          else { requestAnimationFrame(tick); }
+        })
+        .catch(function() { requestAnimationFrame(tick); });
+    } else {
+      requestAnimationFrame(tick);
+    }
+  }
+
+  function onScanned(code) {
+    scanning = false;
+    if (stream) { stream.getTracks().forEach(function(t){ t.stop(); }); }
+    currentCode = code;
+    currentProduct = PRODUCTS.find(function(p) { return String(p.jan) === String(code); }) || null;
+    document.getElementById('status').innerText = '';
+
+    if (currentProduct) {
+      document.getElementById('foundName').innerText = currentProduct.name;
+      document.getElementById('foundJan').innerText = 'JAN: ' + code;
+      document.getElementById('foundPrice').innerText =
+        '原価: ¥' + currentProduct.cost + '　通常売価: ¥' + currentProduct.priceNormal;
+      document.getElementById('qtyInput').value = 1;
+      document.getElementById('foundBox').classList.add('show');
+      // 数量入力にすぐフォーカスして、そのまま入力→確定へ進めるようにする
+      setTimeout(function() { document.getElementById('qtyInput').focus(); document.getElementById('qtyInput').select(); }, 100);
+    } else {
+      document.getElementById('notFoundJan').innerText = 'JAN: ' + code;
+      document.getElementById('notFoundBox').classList.add('show');
+    }
+  }
+
+  function scanAgain() {
+    document.getElementById('foundBox').classList.remove('show');
+    document.getElementById('notFoundBox').classList.remove('show');
+    document.getElementById('status').innerText = 'カメラを起動しています…';
+    document.getElementById('camWrap').style.display = 'block';
+    start();
+  }
+
+  function confirmAndSend() {
+    const qty = Number(document.getElementById('qtyInput').value) || 1;
+    sendResult(currentCode, currentProduct.name, qty);
+  }
+
+  function sendUnknown() {
+    sendResult(currentCode, null, 1);
+  }
+
+  function useManual() {
+    const v = document.getElementById('manualInput').value.trim();
+    if (!v) { alert('JANコードを入力してください。'); return; }
+    onScanned(v);
+  }
+
+  function sendResult(jan, name, qty) {
+    if (window.opener) {
+      window.opener.postMessage({ type: 'jan-scanned', jan: jan, name: name, qty: qty }, '*');
+      document.body.innerHTML = '<div style="text-align:center; margin-top:60px; font-size:1.1rem;">元の画面に戻しました。<br>このタブは閉じて構いません。</div>';
+      setTimeout(function() { window.close(); }, 600);
+    } else {
+      alert('元のアプリの画面が見つかりません。JANコード: ' + jan);
+    }
+  }
+
+  window.addEventListener('load', start);
+</script>
+</body>
+</html>
